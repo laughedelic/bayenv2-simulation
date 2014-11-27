@@ -1,0 +1,14 @@
+# sbt specific
+dist/*
+target/
+boot/
+lib_managed/
+src_managed/
+project/boot/
+project/plugins/project/
+
+# our local mvn repo
+artifacts/
+
+# credentials
+credentials.sbt
