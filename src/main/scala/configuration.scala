@@ -5,7 +5,8 @@ import ohnosequences.statika.ami.AMI149f7863
 import ohnosequences.nispero._
 import ohnosequences.nispero.bundles._
 import ohnosequences.nispero.bundles.console.{Console, FarmStateLogger}
-import ohnosequences.awstools.ec2.{EC2, InstanceType, InstanceSpecs}
+import ohnosequences.awstools.ec2.{EC2, InstanceSpecs}
+import ohnosequences.awstools.ec2.InstanceType._
 import ohnosequences.awstools.s3.{S3, ObjectAddress}
 import ohnosequences.awstools.autoscaling._
 import ohnosequences.nispero.bundles.{NisperoDistribution, Worker, Configuration}
@@ -62,7 +63,7 @@ case object configuration extends Configuration {
   val  ami = AMI149f7863
 
   val specs = InstanceSpecs(
-    instanceType = InstanceType.C1Medium,
+    instanceType = InstanceType("t1.micro"),
     amiId = ami.id,
     securityGroups = List("nispero"),
     keyName = "munich",
@@ -75,7 +76,7 @@ case object configuration extends Configuration {
 
     managerConfig = ManagerConfig(
       groups = ManagerAutoScalingGroups(
-        instanceSpecs = specs.copy(instanceType = InstanceType.C1Medium),
+        instanceSpecs = specs.copy(instanceType = InstanceType("m3.medium")),
         version = version,
         purchaseModel = SpotAuto
       ),
@@ -97,17 +98,14 @@ case object configuration extends Configuration {
     //sets working directory to ephemeral storage
     workersDir = "/media/ephemeral0",
 
-    //maximum time for processing task
+    // maximum time for processing task
     taskProcessTimeout = 60 * 60 * 1000,
 
     resources = Resources(id = version)(
       workersGroup = WorkersAutoScalingGroup(
-        desiredCapacity = 1,
+        desiredCapacity = 2,
         version = version,
-        instanceSpecs = specs.copy(
-          instanceType = InstanceType.InstanceType("t1.micro"),
-          deviceMapping = Map("/dev/xvdb" -> "ephemeral0")
-        )
+        instanceSpecs = specs.copy(deviceMapping = Map("/dev/xvdb" -> "ephemeral0"))
       )
     ),
 
@@ -126,10 +124,10 @@ case object instructions extends ScriptExecutor() {
     |curl http://www.eve.ucdavis.edu/gmcoop/bayenv2_64bit.tar.gz > bayenv2.tar.gz
     |tar xvzf bayenv2.tar.gz
     |chmod a+x bayenv2
-    |mv bayenv2 /media/ephemeral0/
     |""".stripMargin
 
   val instructionsScript = """
+    |cp /root/applicator/bayenv2 .
     |./bayenv2 -i input/snp.inp -m input/covMatrix -e input/envVars -p 4 -k 10000 -n 6 -t -o snp.out
     |exitcode=$?
     |mv snp.out.bf output/snp.out
