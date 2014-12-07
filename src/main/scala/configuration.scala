@@ -17,39 +17,44 @@ import ohnosequences.typesets._
 import shapeless._
 import scala.io.Source
 
-case class SNPsProvider(providerName: String, snpsFile: String, covMatrixFile: String, envVarsFile: String) extends TasksProvider {
+case class SNPsProvider(bucket: String, project: String, snpsFile: String, covMatrixFile: String, envVarsFile: String) extends TasksProvider {
 
-  val bucket = "bayenv-testing"
-  val inputKey  = "snp.inp"
-  val outputKey = "snp.out"
-  val covMatrix = "covMatrix"
-  val envVars = "envVars"
+  def objAddress(suffix: String): ObjectAddress = ObjectAddress(bucket, project+"/"+suffix)
 
-  def objAddress(name: String): ObjectAddress = ObjectAddress(bucket,  providerName+"/"+name)
+  def tasks(s3: S3): Stream[Task] = {
+    val snpsObj = objAddress(snpsFile)
+    val snpsStream = s3.s3.getObject(snpsObj.bucket, snpsObj.key).getObjectContent
 
-  def tasks(s3: S3): List[Task] = {
-    // s3.createBucket(bucket)
-    // s3.putObject(objAddress(covMatrix), covMatrixFile)
-    // s3.putObject(objAddress(envVars), envVarsFile)
+    Source.fromInputStream(snpsStream).getLines.sliding(2, 2).zipWithIndex.sliding(20, 20).map { chunk =>
 
-    val snpsObj = objAddress("input/"+snpsFile)
-    val objectStream = s3.s3.getObject(snpsObj.bucket, snpsObj.key).getObjectContent
-    Source.fromInputStream(objectStream).getLines.sliding(2, 2).zipWithIndex.map { case (snp, i) =>
-
-      val inputObject  = objAddress("input/snps/"+inputKey+i.toString)
-      s3.putWholeObject(inputObject, snp.mkString("\n"))
-
-      Task("snp"+i.toString,
-        Map(
-          inputKey -> inputObject,
-          covMatrix -> objAddress("input/"+covMatrixFile),
-          envVars -> objAddress("input/"+envVarsFile)
-        ),
-        Map(outputKey -> objAddress("output/"+outputKey+i.toString))
+      Task("chunk["+chunk.head._2+"-"+chunk.last._2+"]",
+        chunk.map{ case (snp, i) => "snp"+i+".inp" -> snp.mkString("\n") }.toMap,
+        chunk.map{ case (snp, i) => "snp"+i+".out" -> objAddress("output2/snp"+i+".out") }.toMap
       )
 
-    }.toList
+    }.toStream
   }
+}
+
+object consts {
+  val bucket = "bayenv-testing"
+
+  val tasksProvider = SNPsProvider(bucket,
+    project       = "bayenv2_autos_nosingle",
+    snpsFile      = "input/bayenv2_autos_nosingle.inp",
+    covMatrixFile = "input/covMatrix_median_autos_Nov27.txt",
+    envVarsFile   = "input/env_variables_standardized_v1.txt"
+  )
+  // SNPsProvider("data100Bayenv", 
+  //   snpsFile      = "data100Bayenv.inp",
+  //   covMatrixFile = "covMatrix",
+  //   envVarsFile   = "envVars"
+  // ),
+  // SNPsProvider("bayenv2_chrX_nosingle",
+  //   snpsFile      = "bayenv2_chrX_nosingle.inp",
+  //   covMatrixFile = "covMatrix_median_X_Nov27.txt",
+  //   envVarsFile   = "env_variables_standardized_v1.txt"
+  // ),
 }
 
 case object configuration extends Configuration {
@@ -83,17 +88,7 @@ case object configuration extends Configuration {
       password = "15ea88a619"
     ),
 
-    tasksProvider = 
-      SNPsProvider("data100Bayenv", 
-        snpsFile      = "data100Bayenv.inp",
-        covMatrixFile = "covMatrix",
-        envVarsFile   = "envVars"
-      ),
-      //  ~ SNPsProvider("bayenv2_chrX_nosingle",
-      //   snpsFile      = "bayenv2_chrX_nosingle.inp",
-      //   covMatrixFile = "covMatrix_median_X_Nov27.txt",
-      //   envVarsFile   = "env_variables_standardized_v1.txt"
-      // ),
+    tasksProvider = consts.tasksProvider,
 
     //sets working directory to ephemeral storage
     workersDir = "/media/ephemeral0",
@@ -103,7 +98,7 @@ case object configuration extends Configuration {
 
     resources = Resources(id = version)(
       workersGroup = WorkersAutoScalingGroup(
-        desiredCapacity = 2,
+        desiredCapacity = 1,
         version = version,
         instanceSpecs = specs.copy(deviceMapping = Map("/dev/xvdb" -> "ephemeral0"))
       )
@@ -119,18 +114,27 @@ case object configuration extends Configuration {
 
 // TODO: write a bundle for this
 case object instructions extends ScriptExecutor() {
-  val configureScript = """
+  val provider = consts.tasksProvider
+
+  val configureScript = s"""
     |echo "configuring"
     |curl http://www.eve.ucdavis.edu/gmcoop/bayenv2_64bit.tar.gz > bayenv2.tar.gz
     |tar xvzf bayenv2.tar.gz
     |chmod a+x bayenv2
+    |aws s3 cp --region eu-west-1 s3://${provider.bucket}/${provider.project}/${provider.covMatrixFile} covMatrix
+    |aws s3 cp --region eu-west-1 s3://${provider.bucket}/${provider.project}/${provider.envVarsFile} envVars
     |""".stripMargin
 
   val instructionsScript = """
-    |cp /root/applicator/bayenv2 .
-    |./bayenv2 -i input/snp.inp -m input/covMatrix -e input/envVars -p 4 -k 10000 -n 6 -t -o snp.out
+    |for snp in $(ls input/snp*.inp); do
+    |    out=${snp#input/}
+    |    out=${out%.inp}.out
+    |    for i in {1..10}; do
+    |        /root/applicator/bayenv2 -i $snp -m /root/applicator/covMatrix -e /root/applicator/envVars -p 4 -k 10000 -n 6 -t -o $out
+    |    done
+    |    cat ${out}.bf | cut -f 2- > output/$out
+    |done
     |exitcode=$?
-    |mv snp.out.bf output/snp.out
     |(( $exitcode == 0 )) && echo "success" > message || echo "failure" > message
     |exit $exitcode
     |""".stripMargin
