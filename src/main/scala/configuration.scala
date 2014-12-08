@@ -22,17 +22,15 @@ case class SNPsProvider(bucket: String, project: String, snpsFile: String, covMa
   def objAddress(suffix: String): ObjectAddress = ObjectAddress(bucket, project+"/"+suffix)
 
   def tasks(s3: S3): Stream[Task] = {
-    val snpsObj = objAddress(snpsFile)
-    val snpsStream = s3.s3.getObject(snpsObj.bucket, snpsObj.key).getObjectContent
+    s3.readWholeObject(objAddress(snpsFile)).split("\n")
+      .sliding(2, 2).zipWithIndex
+      .sliding(20, 20).toStream.map { chunk =>
 
-    Source.fromInputStream(snpsStream).getLines.sliding(2, 2).zipWithIndex.sliding(20, 20).map { chunk =>
-
-      Task("chunk["+chunk.head._2+"-"+chunk.last._2+"]",
-        chunk.map{ case (snp, i) => "snp"+i+".inp" -> snp.mkString("\n") }.toMap,
-        chunk.map{ case (snp, i) => "snp"+i+".out" -> objAddress("output2/snp"+i+".out") }.toMap
-      )
-
-    }.toStream
+        Task("chunk["+chunk.head._2+"-"+chunk.last._2+"]",
+          chunk.map{ case (snp, i) => "snp"+i+".inp" -> snp.mkString("\n") }.toMap,
+          chunk.map{ case (snp, i) => "snp"+i+".out" -> objAddress("output2/snp"+i+".out") }.toMap
+        )
+    }
   }
 }
 
@@ -94,7 +92,7 @@ case object configuration extends Configuration {
     workersDir = "/media/ephemeral0",
 
     // maximum time for processing task
-    taskProcessTimeout = 60 * 60 * 1000,
+    taskProcessTimeout = 80 * 60, // seconds
 
     resources = Resources(id = version)(
       workersGroup = WorkersAutoScalingGroup(
@@ -135,7 +133,7 @@ case object instructions extends ScriptExecutor() {
     |    cat ${out}.bf | cut -f 2- > output/$out
     |done
     |exitcode=$?
-    |(( $exitcode == 0 )) && echo "success" > message || echo "failure" > message
+    |(( $exitcode == 0 )) && echo -n "success!" > message || echo -n "failure ):" > message
     |exit $exitcode
     |""".stripMargin
 }
